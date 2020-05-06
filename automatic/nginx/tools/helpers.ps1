@@ -37,7 +37,7 @@ function Get-NginxPaths {
         [Parameter(Position = 0, Mandatory)][ValidateNotNullOrEmpty()][string] $installDir
     )
 
-    $nginxDir = Get-ChildItem $installDir -Directory -Filter 'nginx*' | Sort-Object { -join $_.Name.Replace('-','.').Split('.').PadLeft(3) } -Descending | Select-Object -First 1 -ExpandProperty FullName
+    $nginxDir = Get-ChildItem $installDir -Directory | Select-Object -First 1 -ExpandProperty FullName
     $confPath = Join-Path $nginxDir 'conf\nginx.conf'
     $binPath = Join-Path $nginxDir 'nginx.exe'
 
@@ -50,9 +50,27 @@ function Install-Nginx {
         [Parameter(Position = 0, Mandatory)][ValidateNotNullOrEmpty()][PSCustomObject] $arguments
     )
 
+    # Move older install up one
+    $existingNginxDir = Get-ChildItem $arguments.destination -Directory -Filter 'nginx*' | Sort-Object { -join $_.Name.Replace('-','.').Split('.').PadLeft(3) } -Descending | Select-Object -First 1 -ExpandProperty FullName
+
+    Write-Verbose "existingDirectory $existingNginxDir"
+
+    if (Test-Path $existingNginxDir) {
+      Get-ChildItem $existingNginxDir | Move-Item -Destination $arguments.destination
+      Remove-Item $existingNginxDir
+    }
+
+    $specificFolder = [System.IO.Path]::GetFileNameWithoutExtension($arguments.file)
+
+    Write-Verbose "specificFolder $specificFolder"
+
     Get-ChocolateyUnzip `
         -file $arguments.file `
-        -destination $arguments.destination
+        -destination $arguments.destination `
+        -packageName $env:ChocolateyPackageName `
+        -specificFolder $specificFolder
+
+    Get-ChildItem $arguments.destination
 
     Set-NginxConfig $arguments
 
@@ -71,16 +89,12 @@ function Install-NginxService {
 
     $nginxPaths = Get-NginxPaths $arguments.destination
 
-    try {
+    Get-Service -Name $arguments.serviceName -ErrorAction SilentlyContinue | ForEach-Object {
       write-host "Shutting down Nginx if it is running"
-      Start-ChocolateyProcessAsAdmin "cmd /c NET STOP $($arguments.serviceName)"
-      Start-ChocolateyProcessAsAdmin "cmd /c sc delete $($arguments.serviceName)"
-    } catch {
-      # no service installed
+      nssm stop $($arguments.serviceName) 2>&1 | Out-Null
+      nssm remove $($arguments.serviceName) confirm 2>&1 | Out-Null
     }
 
-    nssm stop $($arguments.serviceName) 2>&1 | Out-Null
-    nssm remove $($arguments.serviceName) confirm 2>&1 | Out-Null
     nssm install $($arguments.serviceName) "$($nginxPaths.BinPath)" 2>&1 | Out-Null
     nssm set $($arguments.serviceName) Description "Nginx web server" 2>&1 | Out-Null
     nssm set $($arguments.serviceName) AppDirectory  "$($nginxPaths.NginxDir)" 2>&1 | Out-Null
